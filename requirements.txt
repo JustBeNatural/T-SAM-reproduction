@@ -1,0 +1,9 @@
+accelerate==1.14.0
+diffusers==0.40.0
+matplotlib==3.11.1
+pillow==12.3.0
+pypdf==6.16.2
+pytorch-metric-learning==2.9.0
+pyyaml==6.0.3
+safetensors==0.8.0
+transformers==5.16.1
