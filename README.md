@@ -5,6 +5,7 @@ This repository is a reproduction and compatibility-fixed implementation of:
 **Text Embedding is Not All You Need: Attention Control for Text-to-Image Semantic Alignment with Text Self-Attention Maps**
 
 The method is referred to here as **T-SAM**. It improves text-to-image semantic alignment by using text self-attention maps to guide cross-attention maps during inference.
+The reproduction results are located in the `fix_sd` and `fix_tsam` folders; the following inputs were used for each: "An orange chair and a blue clock" and "a pair of green eyeglasses and a yellow wall clock on a table"
 
 ## Method Summary
 
