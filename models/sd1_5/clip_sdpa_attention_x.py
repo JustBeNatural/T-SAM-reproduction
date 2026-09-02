@@ -101,96 +101,47 @@ class CLIPSdpaAttentionX(CLIPAttention):
         output_attentions: Optional[bool] = False,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        if output_attentions:
-            # TODO: Improve this warning with e.g. `model.config.attn_implementation = "manual"` once this is implemented.
-            logger.warning_once(
-                "CLIPModel is using CLIPSdpaAttention, but `torch.nn.functional.scaled_dot_product_attention` does not "
-                "support `output_attentions=True`. Falling back to the manual attention implementation, but specifying "
-                "the manual implementation will be required from Transformers version v5.0.0 onwards. This warning can "
-                'be removed using the argument `attn_implementation="eager"` when loading the model.'
-            )
-            return super().forward(
-                hidden_states=hidden_states,
-                attention_mask=attention_mask,
-                causal_attention_mask=causal_attention_mask,
-                output_attentions=output_attentions,
-            )
-
-        # CLIP text model uses both `causal_attention_mask` and `attention_mask`
+        # Match Transformers' current CLIPAttention calculation exactly, while
+        # storing the attention probabilities needed by T-SAM.
         if attention_mask is not None and causal_attention_mask is not None:
-            attn_mask = attention_mask + causal_attention_mask
+            attention_mask = attention_mask + causal_attention_mask
         elif causal_attention_mask is not None:
-            attn_mask = causal_attention_mask
-        else:
-            attn_mask = attention_mask
+            attention_mask = causal_attention_mask
+        is_causal = kwargs.get("is_causal", False)
 
-        bsz, tgt_len, embed_dim = hidden_states.size()
+        input_shape = hidden_states.shape[:-1]
+        hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
+        query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
-        query_states = query_states.view(bsz, -1, self.num_heads, self.head_dim).transpose(1, 2)
-        key_states = key_states.view(bsz, -1, self.num_heads, self.head_dim).transpose(1, 2)
-        value_states = value_states.view(bsz, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        attention_scores = torch.matmul(query_states, key_states.transpose(-1, -2)) * self.scale
+        if attention_mask is not None:
+            attention_scores = attention_scores + attention_mask
+        elif is_causal:
+            query_length, key_length = attention_scores.shape[-2:]
+            causal_mask = torch.ones(
+                query_length,
+                key_length,
+                device=attention_scores.device,
+                dtype=torch.bool,
+            ).triu(1)
+            attention_scores = attention_scores.masked_fill(
+                causal_mask, torch.finfo(attention_scores.dtype).min
+            )
+        attention_probs = nn.functional.softmax(attention_scores, dim=-1, dtype=torch.float32).to(query_states.dtype)
+        attention_probs = nn.functional.dropout(attention_probs, p=0.0 if not self.training else self.dropout, training=self.training)
 
-        # SDPA with memory-efficient backend is currently (torch==2.1.2) bugged with non-contiguous inputs with custom attn_mask,
-        # Reference: https://github.com/pytorch/pytorch/issues/112577.
-        if not is_torch_greater_or_equal_than_2_2 and query_states.device.type == "cuda" and attn_mask is not None:
-            query_states = query_states.contiguous()
-            key_states = key_states.contiguous()
-            value_states = value_states.contiguous()
-
-        # CLIP text model uses both `causal_attention_mask` and `attention_mask` sequentially.
-        # attn_output = torch.nn.functional.scaled_dot_product_attention(
-        #     query_states,
-        #     key_states,
-        #     value_states,
-        #     attn_mask=attn_mask,
-        #     dropout_p=self.dropout if self.training else 0.0,
-        #     scale=self.scale,
-        # )
-        ##########_X
-        attention_probs = self.get_attention_scores(
-            query_states,
-            key_states,
-            attention_mask=attn_mask,
-            # dropout_p=self.dropout if self.training else 0.0,
-        )
-        
-        shapes = attention_probs.shape
-        attn_re = attention_probs.reshape(bsz, self.num_heads, shapes[-2], shapes[-1])
-
-        # attention_probs = attn_re.reshape(bsz* self.num_heads, shapes[-2], shapes[-1])
-
-        value_states = value_states.squeeze()
-        hidden_states = torch.bmm(attention_probs, value_states)
-
-
-        # hidden_states = self.batch_to_head_dim(hidden_states)
-        # print(self.dummy)
-        ######_x
-        if attention_probs.size()[-1] in [120,77]:
-            # batch = 1 if self.positive_prompt else 0
-            if self.dummy == 0:
-                self.attn_data_x = torch.mean(attn_re,dim=1).squeeze()
-                # print("store data")
-        ######_x
-        
+        if attention_probs.size(-1) in [120, 77] and self.dummy == 0:
+            self.attn_data_x = torch.mean(attention_probs, dim=1).squeeze(0)
         self.dummy = 1
-        
-        attn_output = hidden_states.to(query_states.dtype)
-        attn_output = attn_output.unsqueeze(0)
-        # linear proj
-        # hidden_states = self.to_out[0](hidden_states)
-        # # dropout
-        # attn_output = self.to_out[1](hidden_states)
-        ##########
-        attn_output = attn_output.transpose(1, 2)
-        attn_output = attn_output.reshape(bsz, tgt_len, embed_dim)
 
+        attn_output = torch.matmul(attention_probs, value_states)
+        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.out_proj(attn_output)
 
-        return attn_output, None
+        return attn_output, attention_probs if output_attentions else None
     
     

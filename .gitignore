@@ -1,2 +1,17 @@
 *.pyc
 __pycache__/
+.venv/
+
+# Generated outputs
+generation*/
+fixed*/
+better*/
+debug*/
+compare*/
+best*/
+result*/
+test_prompt*/
+
+# Local papers and generated comparison images
+*.pdf
+*_diff.jpg

@@ -1005,17 +1005,17 @@ class StableDiffusionPipelineX_2(
         """
         cnt = 0 
         loss = 100.0
-        # manually set
-        # loss_threshold = {5:0.005*15, 6:0.03*21, 7:0.03*28} # 0.03 is average cosine distance
-        loss_threshold = {5:0.14*4, 6:0.14*5, 7:0.14*6} # 0.03 is average cosine distance
-        # loss_threshold = {5:0.005*15, 6:0.03*21, 7:0.18*6}
+        # Original code only had thresholds for very short prompts.
+        # Generalize the same pattern so iterative refinement works for longer prompts.
+        token_count = int(eos_idx) - 1
+        loss_threshold = 0.14 * max(token_count - 1, 1)
         for cnt in range(30):
             # print("cnt", cnt)
-            if cnt == 20 and loss > loss_threshold[eos_idx-1]:
+            if cnt == 20 and loss > loss_threshold:
                 # print("break!")
                 break
             
-        # while loss > loss_threshold[eos_idx-1] and cnt < 30:
+        # while loss > loss_threshold and cnt < 30:
         #     cnt += 1
         #     print(cnt)
         
@@ -1148,6 +1148,7 @@ class StableDiffusionPipelineX_2(
         max_iter_to_alter: int = 25,
         steps_to_save_attention_maps = None,
         latent_opt_config = None,
+        debug_tsam: bool = False,
         **kwargs,
     ):
         r"""
@@ -1374,6 +1375,13 @@ class StableDiffusionPipelineX_2(
         ## latent update
         scale_range = np.linspace(1.0, 0.5, len(self.scheduler.timesteps))
         step_size = latent_opt_config.scale_factor * np.sqrt(scale_range)
+        if debug_tsam:
+            print(
+                f"T-SAM active: {max_iter_to_alter != 0}; "
+                f"max_iter_to_alter={max_iter_to_alter}; "
+                f"iterative_refinement_steps={latent_opt_config.iterative_refinement_steps}; "
+                f"scale_factor={latent_opt_config.scale_factor}; k={latent_opt_config.k}"
+            )
 
         text_embeddings = (
             prompt_embeds[batch_size * num_images_per_prompt :]
@@ -1445,6 +1453,8 @@ class StableDiffusionPipelineX_2(
                                         # self_attn_score_pairs=self_attn_score_pairs,
                                         avg_text_sa_norm = avg_block_text_sa_norm,
                                     )
+                                if debug_tsam and i < 3:
+                                    print(f"T-SAM loss at denoising step {i}: {loss.detach().float().item():.6f}")
                         # print("attn loss", loss)
 
                         # If this is an iterative refinement step, verify we have reached the desired threshold for all
@@ -1541,8 +1551,7 @@ class StableDiffusionPipelineX_2(
             image = self.vae.decode(latents / self.vae.config.scaling_factor, return_dict=False, generator=generator)[
                 0
             ]
-            # image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_embeds.dtype)
-            has_nsfw_concept = None
+            image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_embeds.dtype)
         else:
             image = latents
             has_nsfw_concept = None

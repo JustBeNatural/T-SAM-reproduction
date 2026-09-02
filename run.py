@@ -24,7 +24,9 @@ def run_one_prompt(
     generation_dir: str,
     save_flags: dict,
     seed:int,
-    num_inference_steps:int
+    num_inference_steps:int,
+    debug_tsam: bool = False,
+    negative_prompt: str = None
 ):
     os.makedirs(generation_dir,exist_ok=True)
     _, eos_idx = get_token_ids(prompt=prompt, tokenizer=pipe.tokenizer)
@@ -65,10 +67,13 @@ def run_one_prompt(
         prompt=prompt,
         generator=torch.Generator("cuda").manual_seed(seed),
         num_inference_steps=num_inference_steps,
+        guidance_scale=latent_opt_config.guidance_scale,
+        negative_prompt=negative_prompt,
         max_iter_to_alter=max_iter_to_alter,
         iterative_refinement_steps=iterative_refinement_steps,
         steps_to_save_attention_maps=steps_to_save_attention_maps,
-        latent_opt_config = latent_opt_config
+        latent_opt_config = latent_opt_config,
+        debug_tsam=debug_tsam,
     )  
     
 
@@ -104,12 +109,15 @@ def parse_args():
     parser.add_argument("--steps", type=int, default=50, help="# of inference steps")
     parser.add_argument("--seed", type=int, default=4913, help="Random seed")
     parser.add_argument("--generation_dir", type=str, default="./generation_dir", help="Output dir")
+    parser.add_argument("--negative_prompt", type=str, default=None, help="Text prompt for things to avoid")
     parser.add_argument("--no_update_latent", action="store_true", help="Disable T-SAM latent optimization")
     parser.add_argument("--no_save_text_selfattn", action="store_true", help="Do not save text self-attention map")
     parser.add_argument("--no_save_crossattn", action="store_true", help="Do not save cross-attention similarity maps")
     parser.add_argument("--no_save_images", action="store_true", help="Do not save generated images")
     parser.add_argument("--max_iter_to_alter", type=int, default=None, help="Override latent optimization step count")
     parser.add_argument("--no_iterative_refinement", action="store_true", help="Disable extra iterative refinement steps")
+    parser.add_argument("--debug_tsam", action="store_true", help="Print whether T-SAM loss and latent updates are active")
+    parser.add_argument("--debug_prompt", action="store_true", help="Print the exact prompt and output directory")
     return parser.parse_args()
 
 
@@ -129,6 +137,10 @@ if __name__ == "__main__":
     if args.no_iterative_refinement:
         latent_opt_config.iterative_refinement_steps = []
     prompt_list = [args.prompt]
+    if args.debug_prompt:
+        print(f"Prompt received: {args.prompt!r}")
+        print(f"Negative prompt received: {args.negative_prompt!r}")
+        print(f"Output directory: {args.generation_dir!r}")
     save_flags = {
         "save_text_selfattn": not args.no_save_text_selfattn,
         "save_gen_images": not args.no_save_images,
@@ -146,5 +158,7 @@ if __name__ == "__main__":
             seed=args.seed,
             num_inference_steps=args.steps,
             save_flags=save_flags,
-            model_name=args.model_name
+            model_name=args.model_name,
+            debug_tsam=args.debug_tsam,
+            negative_prompt=args.negative_prompt
         )
